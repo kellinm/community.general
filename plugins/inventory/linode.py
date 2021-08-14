@@ -26,6 +26,14 @@ DOCUMENTATION = r'''
             description: marks this as an instance of the 'linode' plugin
             required: true
             choices: ['linode', 'community.general.linode']
+        ip_style:
+            description: Return addresses mixed or separated by public and private.
+            default:
+                - mixed
+            choices:
+                - mixed
+                - separate
+            version_added: 3.6.0
         access_token:
             description: The Linode account personal access token.
             required: true
@@ -79,6 +87,13 @@ groups:
   mailservers: "'mail' in (tags|list)"
 compose:
   ansible_port: 2222
+
+# Example where control traffic limited to internal network
+plugin: community.general.linode
+access_token: foobar
+ip_style: separate
+compose:
+  ansible_host: ipv4['private'][0]
 '''
 
 import os
@@ -164,16 +179,42 @@ class InventoryModule(BaseInventoryPlugin, Constructable):
         for instance in self.instances:
             self.inventory.add_host(instance.label, group=instance.group)
 
+    def _identify_public_private_ips(self, hostvar_key, instance):
+        """Add ipv4 and ipv6 hostvars separated by public and private interface."""
+        if hostvar_key == 'ipv4':
+            self.inventory.set_variable(
+                instance.label,
+                hostvar_key,
+                {
+                    'public': [ ip.address for ip in instance.ips.ipv4.public],
+                    'private': [ ip.address for ip in instance.ips.ipv4.private ]
+                }
+            )
+        elif hostvar_key == 'ipv6':
+            self.inventory.set_variable(
+                instance.label,
+                hostvar_key,
+                {
+                    'slaac': instance.ips.ipv6.slaac.address,
+                    'link_local': instance.ips.ipv6.link_local.address,
+                    'pools': [ ip.address for ip in instance.ips.ipv6.pools ]
+                }
+            )
+
     def _add_hostvars_for_instances(self):
         """Add hostvars for instances in the dynamic inventory."""
+        ip_style = self.get_option('ip_style')
         for instance in self.instances:
             hostvars = instance._raw_json
             for hostvar_key in hostvars:
-                self.inventory.set_variable(
-                    instance.label,
-                    hostvar_key,
-                    hostvars[hostvar_key]
-                )
+                if ip_style == 'separate' and hostvar_key in ['ipv4', 'ipv6']:
+                    self._identify_public_private_ips(hostvar_key, instance)
+                else:
+                    self.inventory.set_variable(
+                        instance.label,
+                        hostvar_key,
+                        hostvars[hostvar_key]
+                    )
 
     def _validate_option(self, name, desired_type, option_value):
         """Validate user specified configuration data against types."""
